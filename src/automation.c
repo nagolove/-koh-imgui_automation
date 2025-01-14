@@ -53,12 +53,13 @@ static void render_gui() {
     igGetWindowPos(&wnd_pos);
     igGetWindowSize(&wnd_size);
 
-    bool collapsed = true;
+    bool collapsed = false;
 
     ImVec2 img_min = {}, img_max = {};
     if (igCollapsingHeader_TreeNodeFlags("view", 0)) {
-        collapsed = false;
-        env_draw_imgui(e);
+        collapsed = true;
+        env_draw_imgui_opts(e);
+        env_draw_imgui_env(e);
     }
     igGetItemRectMin(&img_min);
     igGetItemRectMax(&img_max);
