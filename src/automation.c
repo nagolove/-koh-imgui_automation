@@ -1,8 +1,11 @@
+// vim: fdm=marker
+
 #define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 
 #include "cimgui.h"
 #include "cimgui_impl.h"
 #include "koh_common.h"
+#include "koh_envelope.h"
 #include "koh_routine.h"
 #include "koh_console.h"
 #include "koh_hashers.h"
@@ -34,19 +37,7 @@ static const int screen_height = 1080;
 static Camera2D camera = {0};
 static HotkeyStorage hk = {0};
 
-RenderTexture2D tex = {};
-
-static void init() {
-    tex = LoadRenderTexture(1200, 300);
-}
-
-static void shutdown() {
-    UnloadRenderTexture(tex);
-}
-
-Vector2 Im2Vec2(ImVec2 v) {
-    return (Vector2) { .x = v.x, .y = v.y, };
-}
+static Envelope_t e;
 
 static void render_gui() {
     rlImGuiBegin();
@@ -62,48 +53,15 @@ static void render_gui() {
     igGetWindowPos(&wnd_pos);
     igGetWindowSize(&wnd_size);
 
+    bool collapsed = true;
+
     ImVec2 img_min = {}, img_max = {};
-    bool collapsed = false;
-
     if (igCollapsingHeader_TreeNodeFlags("view", 0)) {
-        collapsed = true;
-
-        BeginTextureMode(tex);
-        ClearBackground(GRAY);
-        EndTextureMode();
-
-        //igPushItemFlag(ImGuiItemFlags_Disabled, true);
-        //igButton("Disabled Button", (ImVec2){});
-        //igBeginDisabled(true);
-        rlImGuiImage(&tex.texture);
-        /*igEndDisabled();*/
-        /*igPopItemFlag();*/
-
-        igGetItemRectMin(&img_min);
-        igGetItemRectMax(&img_max);
-
-        Vector2 mp = GetMousePosition();
-
-        if (mp.x >= img_min.x && mp.x <= img_max.x && 
-            mp.y >= img_min.y && mp.y <= img_max.y) {
-            ImGuiWindow *wnd = igGetCurrentWindow();
-            ImVec2 sz = {
-                img_max.x - img_min.x,
-                img_max.y - img_min.y,
-            };
-            igSetWindowHitTestHole(wnd, img_min, sz);
-
-            /*
-            trace(
-                "render_gui: area %s with size %s disabled\n",
-                Vector2_tostr(Im2Vec2(img_min)), 
-                Vector2_tostr(Im2Vec2(sz))
-            );
-            */
-
-        }
-
+        collapsed = false;
+        env_draw_imgui(e);
     }
+    igGetItemRectMin(&img_min);
+    igGetItemRectMax(&img_max);
 
     igEnd();
 
@@ -165,7 +123,7 @@ int main(void) {
     });
     console_immediate_buffer_enable(true);
 
-    init();
+    e = env_new();
 #if defined(PLATFORM_WEB)
     emscripten_set_main_loop_arg(update_render, NULL, target_fps, 1);
 #else
@@ -173,7 +131,7 @@ int main(void) {
         update_render();
     }
 #endif
-    shutdown();
+    env_free(e);
 
     rlImGuiShutdown();
 
