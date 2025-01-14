@@ -37,6 +37,10 @@ static const int screen_height = 1080;
 static Camera2D camera = {0};
 static HotkeyStorage hk = {0};
 
+static EnvelopeOpts e_opts = {
+    .tex_w = 1000,
+    .tex_h = 300,
+};
 static Envelope_t e;
 
 static void render_gui() {
@@ -54,6 +58,19 @@ static void render_gui() {
     igGetWindowSize(&wnd_size);
 
     bool collapsed = false;
+
+    if (igButton("recreate", (ImVec2){})) {
+        if (e) {
+            env_free(e);
+            e = NULL;
+        }
+        e = env_new(e_opts);
+    }
+
+    igSliderInt("tex_w", &e_opts.tex_w, 0, 2000, "%d", 0);
+    igSliderInt("tex_h", &e_opts.tex_h, 0, 2000, "%d", 0);
+
+    igSeparator();
 
     ImVec2 img_min = {}, img_max = {};
     if (igCollapsingHeader_TreeNodeFlags("view", 0)) {
@@ -124,7 +141,8 @@ int main(void) {
     });
     console_immediate_buffer_enable(true);
 
-    e = env_new();
+    e = env_new(e_opts);
+
 #if defined(PLATFORM_WEB)
     emscripten_set_main_loop_arg(update_render, NULL, target_fps, 1);
 #else

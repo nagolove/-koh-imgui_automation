@@ -15,6 +15,7 @@ typedef struct Envelope {
     Vector2         *points;
     int             points_num, poins_cap;
     RenderTexture2D tex;
+    ImVec2          img_min, img_max;
 } Envelope;
 
 // TODO: Перенести в структуру как изменямую величину
@@ -31,6 +32,12 @@ Vector2 *points_process(Envelope_t env, Vector2 mouse_pos) {
     return NULL;
 }
 
+static int cmp(const void *a, const void *b, void *ud) {
+    const Vector2 *_a = a;
+    const Vector2 *_b = b;
+    return _a->x - _b->x;
+}
+
 Vector2 *points_add(Envelope_t e, Vector2 mouse_pos) {
     if (e->points_num + 1 == e->poins_cap) {
         trace("points_add: not enough memory, skipping\n");
@@ -45,13 +52,15 @@ Vector2 *points_add(Envelope_t e, Vector2 mouse_pos) {
     e->points_num++;
 
     // TODO: пересортировать массив
-   
+    koh_qsort(e->points, e->points_num, sizeof(e->points[0]), cmp, NULL);
+
     return ret;
 }
 
 static void env_input(Envelope_t e) {
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Vector2 mp = GetMousePosition();
+        Vector2 mp = Vector2Subtract(GetMousePosition(), Im2Vec2(e->img_min));
+        /*trace("env_input: img_max %s\n", Vector2_tostr(Im2Vec2(e->img_max)));*/
         points_add(e, mp);
     }
 }
@@ -65,9 +74,28 @@ static void env_draw(Envelope_t e) {
 
     ClearBackground(GRAY);
 
+    /*
+    DrawCircle(0, 100, 20, YELLOW);
+    DrawCircle(0, -100, 20, RED);
+    */
+
     for (int i = 0; i < e->points_num; i++) {
-        DrawCircleV(e->points[i], handle_size, BLUE);
+        Vector2 p = e->points[i];
+        p.y = e->tex.texture.height - p.y;
+        DrawCircleV(p, handle_size, VIOLET);
     }
+
+    Vector2 mp = Vector2Subtract(GetMousePosition(), Im2Vec2(e->img_min));
+    Vector2 *under_cursor = points_process(e, mp);
+    if (under_cursor) {
+        Vector2 p = {
+            .y = e->tex.texture.height - under_cursor->y,
+            .x = under_cursor->x,
+        };
+        DrawCircleV(p, handle_size + handle_size / 2., RED);
+    }
+
+    /*trace("\n");*/
 
     EndMode2D();
     EndTextureMode();
@@ -75,10 +103,16 @@ static void env_draw(Envelope_t e) {
 
 void env_draw_imgui_opts(Envelope_t e) {
     igText("points num %d\n", e->points_num);
+    igSameLine(0., 15.);
+    
+    if (igButton("reset envelope", (ImVec2){})) {
+        memset(e->points, 0, sizeof(e->points[0]) * e->poins_cap);
+        e->points_num = 0;
+    }
+
 }
 
 void env_draw_imgui_env(Envelope_t e) {
-    ImVec2 img_min = {}, img_max = {};
 
     env_draw(e);
 
@@ -89,21 +123,22 @@ void env_draw_imgui_env(Envelope_t e) {
     /*igEndDisabled();*/
     /*igPopItemFlag();*/
 
-    igGetItemRectMin(&img_min);
-    igGetItemRectMax(&img_max);
+    igGetItemRectMin(&e->img_min);
+    igGetItemRectMax(&e->img_max);
 
     Vector2 mp = GetMousePosition();
 
-    if (mp.x >= img_min.x && mp.x <= img_max.x && 
-            mp.y >= img_min.y && mp.y <= img_max.y) {
+    if (mp.x >= e->img_min.x && mp.x <= e->img_max.x && 
+            mp.y >= e->img_min.y && mp.y <= e->img_max.y) {
         ImGuiWindow *wnd = igGetCurrentWindow();
         ImVec2 sz = {
-            img_max.x - img_min.x,
-            img_max.y - img_min.y,
+            e->img_max.x - e->img_min.x,
+            e->img_max.y - e->img_min.y,
         };
-        igSetWindowHitTestHole(wnd, img_min, sz);
+        igSetWindowHitTestHole(wnd, e->img_min, sz);
 
         env_input(e);
+
         /*
            trace(
            "render_gui: area %s with size %s disabled\n",
@@ -117,10 +152,10 @@ void env_draw_imgui_env(Envelope_t e) {
 
 }
 
-Envelope_t env_new() {
+Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
     // TODO: Задать размер текстуры из опций
-    e->tex = LoadRenderTexture(1200, 300);
+    e->tex = LoadRenderTexture(opts.tex_w, opts.tex_h);
     e->poins_cap = 1024;
     e->points_num = 0;
     e->points = calloc(e->poins_cap, sizeof(e->points[0]));
@@ -143,3 +178,6 @@ void env_free(Envelope_t e) {
     free(e);
 }
 
+float env_eval(Envelope_t e, float amount) {
+    return 0.;
+}
