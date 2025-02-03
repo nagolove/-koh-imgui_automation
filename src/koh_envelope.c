@@ -13,29 +13,28 @@
 typedef struct Envelope {
     Vector2         *points;
     int             points_num, poins_cap;
-    RenderTexture2D tex;
+    RenderTexture2D rt_main, rt_text;
     ImVec2          img_min, img_max;
     // Если stick_index == -1, то индекс сброшен
     int             stick_index;
     Vector2         *under_cursor, cursor_pos;
-    const char      *name;
-    int             thick;
+    /*const char      *name;*/
+    Vector2         *left, *right, *leftest, *rightest;
+
+    EnvelopeOpts    opts;
 } Envelope;
 
 static void env_point_add_default(Envelope_t e);
 
-// TODO: Перенести в структуру как изменямую величину
-static const int handle_size = 10;
-
 // TODO: Придумать абстракцию для передвижения точек под курсором
-Vector2 *points_process(Envelope_t env, Vector2 pos, int *stick_index) {
+Vector2 *points_process(Envelope_t e, Vector2 pos, int *stick_index) {
     /*trace("points_process: pos %s\n", Vector2_tostr(pos));*/
-    for (int i = 0; i < env->points_num; i++) {
-        Vector2 p = env->points[i];
-        if (CheckCollisionPointCircle(pos, p, handle_size)) {
+    for (int i = 0; i < e->points_num; i++) {
+        Vector2 p = e->points[i];
+        if (CheckCollisionPointCircle(pos, p, e->opts.handle_size)) {
             if (stick_index)
                 *stick_index = i;
-            return &env->points[i];
+            return &e->points[i];
         }
     }
     return NULL;
@@ -68,6 +67,8 @@ void env_point_add(Envelope_t e, Vector2 pos) {
 // с зажатым контрол - только по вертикали
 // TODO: ПКМ - удалить
 static void env_input(Envelope_t e) {
+    e->left = NULL;
+    e->right = NULL;
 
     e->cursor_pos = Vector2Subtract(
         GetMousePosition(), Im2Vec2(e->img_min)
@@ -75,38 +76,45 @@ static void env_input(Envelope_t e) {
 
     /*e->stick_index = -1;*/
 
+    // Поиск точки под курсором
     e->under_cursor = points_process(e, e->cursor_pos, &e->stick_index);
+
     bool sticked = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
 
-    /*if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && e->stick_index == -1) {*/
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !e->under_cursor) {
         env_point_add(e, e->cursor_pos);
+        return;
     }
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && e->under_cursor) {
         env_point_remove(e, e->stick_index);
+        return;
     }
+
+    e->leftest = &e->points[0];
+    e->rightest = &e->points[e->points_num - 1];
+
+    //TODO: если курсор на крайнем кружке, то создавать left, right
 
     if (e->stick_index != -1 && sticked) {
         // Первую и последнюю вершину можно двигать только вверх и вниз
         if (e->stick_index == 0 || e->stick_index == e->points_num - 1) {
             e->points[e->stick_index].y = e->cursor_pos.y;
         } else {
-            Vector2 *left = NULL, *right = NULL;
 
             if (e->stick_index >= 1) {
-                left = &e->points[e->stick_index - 1];
+                e->left = &e->points[e->stick_index - 1];
             }
             if (e->stick_index + 1 < e->points_num) {
-                right = &e->points[e->stick_index + 1];
+                e->right = &e->points[e->stick_index + 1];
             }
 
             // Ограничение перемещения точки по горизонтали
             Vector2 cursor = e->cursor_pos;
-            if (left && e->cursor_pos.x < left->x)
-                cursor.x = left->x;
-            if (right && e->cursor_pos.x > right->x)
-                cursor.x = right->x;
+            if (e->left && e->cursor_pos.x < e->left->x)
+                cursor.x = e->left->x;
+            if (e->right && e->cursor_pos.x > e->right->x)
+                cursor.x = e->right->x;
 
             bool in_range = e->stick_index >= 0 &&
                             e->stick_index < e->points_num;
@@ -119,12 +127,12 @@ static void env_input(Envelope_t e) {
 
 void draw_lines(Envelope_t e) {
     Vector2 p1 = e->points[0];
-    const float tex_height = e->tex.texture.height;
+    const float tex_height = e->rt_main.texture.height;
     p1.y = tex_height - p1.y;
     for (int i = 1; i < e->points_num ; i++) {
         Vector2 p2 = e->points[i];
         p2.y = tex_height - p2.y;
-        DrawLineEx(p1, p2, e->thick, BLUE);
+        DrawLineEx(p1, p2, e->opts.line_thick, BLUE);
         p1 = p2;
     }
 }
@@ -132,7 +140,7 @@ void draw_lines(Envelope_t e) {
 void draw_curves(Envelope_t e) {
     // Рисовать линии
     Vector2 p1 = e->points[0];
-    const float tex_height = e->tex.texture.height;
+    const float tex_height = e->rt_main.texture.height;
     p1.y = tex_height - p1.y;
     const float thick = 3.f;
     Vector2 points[4] = {};
@@ -146,8 +154,8 @@ void draw_curves(Envelope_t e) {
 
         if (e->points_num >= 4) {
             DrawSplineSegmentLinear(p1, p2, thick, RED);                    
-            DrawSplineBasis(points, 4, e->thick, YELLOW);
-            DrawSplineCatmullRom(points, 4, e->thick, BLUE);
+            DrawSplineBasis(points, 4, e->opts.line_thick, YELLOW);
+            DrawSplineCatmullRom(points, 4, e->opts.line_thick, BLUE);
         }
 
         p1 = p2;
@@ -160,17 +168,42 @@ void draw_curves(Envelope_t e) {
 
 
 static void env_draw(Envelope_t e) {
-    BeginTextureMode(e->tex);
-    Camera2D cam = {
-        .zoom = 1.,
-    };
-    BeginMode2D(cam);
+    Vector2 cursor_point = {};
 
-    ClearBackground(GRAY);
+    if (e->under_cursor) {
+        cursor_point = (Vector2){
+            .y = e->rt_main.texture.height - e->under_cursor->y,
+            .x = e->under_cursor->x,
+        };
 
+        char buf[64] = {};
+        sprintf(buf, "{%d, %d}", (int)cursor_point.x, (int)cursor_point.y);
+
+        BeginTextureMode(e->rt_text);
+        BeginMode2D((Camera2D) { .zoom = 1., });
+        /*
+        Color tmp = background_color;
+        tmp.a = 0;
+        */
+        Color tmp = BROWN;
+        ClearBackground(tmp);
+        int text_size = MeasureText(buf, e->opts.label_font_size);
+        DrawText(buf, text_size / 2, 0, e->opts.label_font_size, BLACK);
+        EndMode2D();
+        EndTextureMode();
+    }
+
+
+    BeginTextureMode(e->rt_main);
+    BeginMode2D((Camera2D) { .zoom = 1., });
+
+    ClearBackground(e->opts.background_color);
+
+    Color color = WHITE;
+    color.a = 10;
     CoSysOpts cosys_opts = {
-        .dest = { 0., 0., e->tex.texture.width, e->tex.texture.height},
-        .color = WHITE,
+        .dest = { 0., 0., e->rt_main.texture.width, e->rt_main.texture.height},
+        .color = color,
         .step = 10.f,
     };
     cosys_draw(cosys_opts);
@@ -179,19 +212,52 @@ static void env_draw(Envelope_t e) {
 
     /*draw_curves(e);*/
 
-    // Рисовать кружки ручек
-    for (int i = 0; i < e->points_num; i++) {
-        Vector2 p = e->points[i];
-        p.y = e->tex.texture.height - p.y;
-        DrawCircleV(p, handle_size, VIOLET);
+    if (e->under_cursor) {
+        DrawCircleV(
+            cursor_point,
+            e->opts.handle_size + e->opts.handle_size / 2.,
+            RED
+        );
+
+        int tex_w = e->rt_text.texture.width,
+            tex_h = e->rt_text.texture.height; 
+        int half_tex_w = tex_w / 2, half_tex_h = tex_h / 2;
+        Rectangle dest = {
+            cursor_point.x - half_tex_w,
+            cursor_point.y - half_tex_w,
+            tex_w, tex_h
+        };
+
+        if (IsKeyDown(KEY_LEFT_SHIFT)) {
+            /*dest.x += tex_w;*/
+            DrawTexturePro(e->rt_text.texture, 
+                (Rectangle) { 0., 0., tex_w, tex_h }, 
+                dest,
+                (Vector2) { half_tex_w, half_tex_h },
+                0., WHITE
+            );
+        } else {
+            if (e->left)
+                dest.x += tex_w;
+            DrawTexturePro(e->rt_text.texture, 
+                (Rectangle) { 0., 0., tex_w, tex_h }, 
+                dest,
+                (Vector2) { half_tex_w, half_tex_h },
+                0., WHITE
+            );
+        }
     }
 
-    if (e->under_cursor) {
-        Vector2 p = {
-            .y = e->tex.texture.height - e->under_cursor->y,
-            .x = e->under_cursor->x,
-        };
-        DrawCircleV(p, handle_size + handle_size / 2., RED);
+    // Рисовать кружки ручек
+    for (int i = 0; i < e->points_num; i++) {
+        Color handle_color = VIOLET;
+
+        if (e->leftest == &e->points[i] || e->rightest == &e->points[i])
+            handle_color = BLACK;
+
+        Vector2 p = e->points[i];
+        p.y = e->rt_main.texture.height - p.y;
+        DrawCircleV(p, e->opts.handle_size, handle_color);
     }
 
 
@@ -202,7 +268,7 @@ static void env_draw(Envelope_t e) {
 }
 
 void env_reset(Envelope_t e) {
-    trace("env_reset: name '%s'\n", e->name);
+    trace("env_reset: name '%s'\n", e->opts.name);
     memset(e->points, 0, sizeof(e->points[0]) * e->poins_cap);
     e->points_num = 0;
 
@@ -214,7 +280,7 @@ void env_draw_imgui_opts(Envelope_t e) {
     igSameLine(0., -1.);
     
     char buf[128] = {};
-    snprintf(buf, sizeof(buf) - 1, "reset envelope##%s", e->name);
+    snprintf(buf, sizeof(buf) - 1, "reset envelope##%s", e->opts.name);
 
     if (igSmallButton(buf)) {
         env_reset(e);
@@ -244,16 +310,13 @@ void env_input_reset(Envelope_t e) {
 }
 
 void env_draw_imgui_env(Envelope_t e) {
-
-    env_draw(e);
-
-    if (e->name) 
-        igText("%s", e->name);
+    if (e->opts.name) 
+        igText("%s", e->opts.name);
 
     //igPushItemFlag(ImGuiItemFlags_Disabled, true);
     //igButton("Disabled Button", (ImVec2){});
     //igBeginDisabled(true);
-    rlImGuiImage(&e->tex.texture);
+    rlImGuiImage(&e->rt_main.texture);
     /*igEndDisabled();*/
     /*igPopItemFlag();*/
 
@@ -277,27 +340,29 @@ void env_draw_imgui_env(Envelope_t e) {
         env_input_reset(e);
     }
 
+    env_draw(e);
 }
 
 static void env_point_add_default(Envelope_t e) {
     env_point_add(e, (Vector2) { 0., 0});
-    Texture t = e->tex.texture;
+    Texture t = e->rt_main.texture;
     env_point_add(e, (Vector2) {  t.width, t.height});
 }
 
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
     // TODO: Задать размер текстуры из опций
-    e->tex = LoadRenderTexture(opts.tex_w, opts.tex_h);
-    e->poins_cap = 1024;
+    e->rt_main = LoadRenderTexture(opts.tex_w, opts.tex_h);
+    e->rt_text = LoadRenderTexture(opts.tex_text_size, opts.tex_text_size);
+    e->poins_cap = opts.default_points_cap;
     e->points_num = 0;
     e->points = calloc(e->poins_cap, sizeof(e->points[0]));
-    e->name = opts.name;
+    e->opts.name = opts.name;
 
     if (opts.line_thick)
-        e->thick = opts.line_thick;
+        e->opts.line_thick = opts.line_thick;
     else
-        e->thick = 2;
+        e->opts.line_thick = 2;
 
     e->stick_index = -1;
 
@@ -314,9 +379,14 @@ void env_free(Envelope_t e) {
         e->poins_cap = 0;
     }
 
-    if (e->tex.id) {
-        UnloadRenderTexture(e->tex);
-        memset(&e->tex, 0, sizeof(e->tex));
+    if (e->rt_main.id) {
+        UnloadRenderTexture(e->rt_main);
+        memset(&e->rt_main, 0, sizeof(e->rt_main));
+    }
+
+    if (e->rt_text.id) {
+        UnloadRenderTexture(e->rt_text);
+        memset(&e->rt_text, 0, sizeof(e->rt_text));
     }
 
     free(e);
@@ -344,6 +414,25 @@ void env_point_remove(Envelope_t e, int index) {
     assert(e);
     assert(index >= 0 && index < e->points_num);
 
+    // Сделать неудалимыми крайние точки
+    if (index == 0 || index + 1 == e->points_num)
+        return;
+
+    for (int i = index; i < e->points_num; i++) {
+        e->points[i] = e->points[i + 1];
+    }
+
     if (e->points_num > 0)
         e->points_num--;
 }
+
+EnvelopeOpts env_partial_opts(EnvelopeOpts opts) {
+    opts.handle_size = 20;
+    opts.line_thick = 10;
+    opts.tex_text_size = 128 * 2;
+    opts.default_points_cap = 1024;
+    opts.label_font_size = 34;
+    opts.background_color = GRAY;
+    return opts;
+}
+

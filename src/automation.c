@@ -30,18 +30,28 @@
 static const int screen_width = 1920;
 static const int screen_height = 1080;
 #else
-static const int screen_width = 1920;
-static const int screen_height = 1080;
+static const int screen_width = 1920 * 2;
+static const int screen_height = 1080 * 2;
 #endif
 
 static Camera2D camera = {0};
 static HotkeyStorage hk = {0};
 
-static EnvelopeOpts e_opts = {
-    .tex_w = 1000,
-    .tex_h = 300,
+static EnvelopeOpts e_opts[] = {
+    {
+        .name = "lines",
+        .tex_w = 800 * 2,
+        .tex_h = 100 * 2,
+    },
+    {
+        .name = "curves",
+        .tex_w = 1000 * 2,
+        .tex_h = 600 * 2,
+    },
 };
-static Envelope_t e;
+
+static Envelope_t e[3];
+const static int e_num = 3;
 
 static void render_gui() {
     rlImGuiBegin();
@@ -50,7 +60,8 @@ static void render_gui() {
     igShowDemoWindow(&open);
 
     bool wnd_open = true;
-    ImGuiWindowFlags wnd_flags = ImGuiWindowFlags_AlwaysAutoResize;
+    ImGuiWindowFlags wnd_flags = ImGuiWindowFlags_AlwaysAutoResize | 
+                                 ImGuiWindowFlags_NoSavedSettings;
     igBegin("automation", &wnd_open, wnd_flags);
 
     ImVec2 wnd_pos = {}, wnd_size = {};
@@ -60,23 +71,31 @@ static void render_gui() {
     bool collapsed = false;
 
     if (igButton("recreate", (ImVec2){})) {
-        if (e) {
-            env_free(e);
-            e = NULL;
+        for (int i = 0; i < e_num; i++) {
+            if (e[i]) {
+                env_free(e[i]);
+                e[i] = NULL;
+            }
+            e[i] = env_new(env_partial_opts(e_opts[i]));
         }
-        e = env_new(e_opts);
     }
 
-    igSliderInt("tex_w", &e_opts.tex_w, 0, 2000, "%d", 0);
-    igSliderInt("tex_h", &e_opts.tex_h, 0, 2000, "%d", 0);
+    igSliderInt("tex_w", &e_opts[0].tex_w, 0, 2000, "%d", 0);
+    igSliderInt("tex_h", &e_opts[0].tex_h, 0, 2000, "%d", 0);
 
     igSeparator();
 
     ImVec2 img_min = {}, img_max = {};
-    if (igCollapsingHeader_TreeNodeFlags("view", 0)) {
+    const bool header_pressed = true;
+    if (header_pressed || igCollapsingHeader_TreeNodeFlags("view", 0)) {
         collapsed = true;
-        env_draw_imgui_opts(e);
-        env_draw_imgui_env(e);
+
+        //ImGuiIO *io = igGetIO();
+
+        for (int i = 0; i < e_num; i++) {
+            env_draw_imgui_opts(e[i]);
+            env_draw_imgui_env(e[i]);
+        }
     }
     igGetItemRectMin(&img_min);
     igGetItemRectMax(&img_max);
@@ -85,20 +104,19 @@ static void render_gui() {
 
     rlImGuiEnd();
 
-    DrawCircle(wnd_pos.x, wnd_pos.y, 10, RED);
-    DrawCircle(wnd_pos.x + wnd_size.x, wnd_pos.y + wnd_size.y, 10, RED);
+    //DrawCircle(wnd_pos.x, wnd_pos.y, 10, RED);
+    //DrawCircle(wnd_pos.x + wnd_size.x, wnd_pos.y + wnd_size.y, 10, RED);
 
     if (collapsed) {
-        DrawCircle(img_min.x, img_min.y, 10, BLUE);
-        DrawCircle(img_max.x, img_max.y, 10, BLUE);
+        /*DrawCircle(img_min.x, img_min.y, 10, BLUE);*/
+        /*DrawCircle(img_max.x, img_max.y, 10, BLUE);*/
     }
 }
 
 
 static void update_render() {
-    ClearBackground(BLACK); 
+    ClearBackground(GRAY); 
     BeginDrawing();
-
     render_gui();
     EndDrawing();
 
@@ -113,6 +131,8 @@ int main(void) {
     camera.zoom = 1.0f;
     srand(time(NULL));
     InitWindow(screen_width, screen_height, "color worms");
+    SetWindowState(FLAG_WINDOW_UNDECORATED);
+
     SetWindowMonitor(1);
     SetTargetFPS(60);
 
@@ -141,7 +161,9 @@ int main(void) {
     });
     console_immediate_buffer_enable(true);
 
-    e = env_new(e_opts);
+    for (int i = 0; i < e_num; i++) {
+        e[i] = env_new(e_opts[i]);
+    }
 
 #if defined(PLATFORM_WEB)
     emscripten_set_main_loop_arg(update_render, NULL, target_fps, 1);
@@ -150,7 +172,10 @@ int main(void) {
         update_render();
     }
 #endif
-    env_free(e);
+
+    for (int i = 0; i < e_num; i++) {
+        env_free(e[i]);
+    }
 
     rlImGuiShutdown();
 
