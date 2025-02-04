@@ -50,8 +50,8 @@ static EnvelopeOpts e_opts[] = {
     },
 };
 
-static Envelope_t e[3];
-const static int e_num = 3;
+static Envelope_t e[2];
+const static int e_num = sizeof(e_opts) / sizeof(e_opts[0]);
 
 static void render_gui() {
     rlImGuiBegin();
@@ -162,7 +162,7 @@ int main(void) {
     console_immediate_buffer_enable(true);
 
     for (int i = 0; i < e_num; i++) {
-        e[i] = env_new(e_opts[i]);
+        e[i] = env_new(env_partial_opts(e_opts[i]));
     }
 
 #if defined(PLATFORM_WEB)

@@ -11,7 +11,7 @@ typedef struct EnvelopeOpts {
     int        tex_w, tex_h;
     int        line_thick;
     int        handle_size;
-    int        tex_text_size;
+    /*int        tex_text_w, tex_text_h;*/
     int        default_points_cap;
     int        label_font_size;
     Color      background_color;

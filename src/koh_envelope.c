@@ -181,14 +181,13 @@ static void env_draw(Envelope_t e) {
 
         BeginTextureMode(e->rt_text);
         BeginMode2D((Camera2D) { .zoom = 1., });
-        /*
-        Color tmp = background_color;
+        Color tmp = e->opts.background_color;
         tmp.a = 0;
-        */
-        Color tmp = BROWN;
+
+        tmp = BROWN;
+
         ClearBackground(tmp);
-        int text_size = MeasureText(buf, e->opts.label_font_size);
-        DrawText(buf, text_size / 2, 0, e->opts.label_font_size, BLACK);
+        DrawText(buf, 0, 0, e->opts.label_font_size, BLACK);
         EndMode2D();
         EndTextureMode();
     }
@@ -199,7 +198,7 @@ static void env_draw(Envelope_t e) {
 
     ClearBackground(e->opts.background_color);
 
-    Color color = WHITE;
+    Color color = GRAY;
     color.a = 10;
     CoSysOpts cosys_opts = {
         .dest = { 0., 0., e->rt_main.texture.width, e->rt_main.texture.height},
@@ -212,6 +211,20 @@ static void env_draw(Envelope_t e) {
 
     /*draw_curves(e);*/
 
+    // Рисовать кружки ручек
+    if (e->points) {
+        for (int i = 0; i < e->points_num; i++) {
+            Color handle_color = VIOLET;
+
+            if (e->leftest == &e->points[i] || e->rightest == &e->points[i])
+                handle_color = BLACK;
+
+            Vector2 p = e->points[i];
+            p.y = e->rt_main.texture.height - p.y;
+            DrawCircleV(p, e->opts.handle_size, handle_color);
+        }
+    }
+
     if (e->under_cursor) {
         DrawCircleV(
             cursor_point,
@@ -223,8 +236,10 @@ static void env_draw(Envelope_t e) {
             tex_h = e->rt_text.texture.height; 
         int half_tex_w = tex_w / 2, half_tex_h = tex_h / 2;
         Rectangle dest = {
-            cursor_point.x - half_tex_w,
-            cursor_point.y - half_tex_w,
+            /*cursor_point.x - half_tex_w,*/
+            /*cursor_point.y - half_tex_w,*/
+            cursor_point.x,
+            cursor_point.y,
             tex_w, tex_h
         };
 
@@ -237,30 +252,27 @@ static void env_draw(Envelope_t e) {
                 0., WHITE
             );
         } else {
-            if (e->left)
-                dest.x += tex_w;
+            trace("env_draw: cursor_point %s\n", Vector2_tostr(cursor_point));
+            if (e->rightest == e->under_cursor)
+                dest.x -= tex_w;
+
+            if (cursor_point.y < e->opts.label_font_size) {
+                trace("env_draw: upper\n");
+                dest.y += e->opts.label_font_size;
+            }
+
+            if (cursor_point.y + e->opts.label_font_size >= e->rt_text.texture.height) {
+                trace("env_draw: upper\n");
+                dest.y -= e->opts.label_font_size;
+            }
+
             DrawTexturePro(e->rt_text.texture, 
                 (Rectangle) { 0., 0., tex_w, tex_h }, 
                 dest,
-                (Vector2) { half_tex_w, half_tex_h },
-                0., WHITE
+                (Vector2) { 0, 0}, 0., WHITE
             );
         }
     }
-
-    // Рисовать кружки ручек
-    for (int i = 0; i < e->points_num; i++) {
-        Color handle_color = VIOLET;
-
-        if (e->leftest == &e->points[i] || e->rightest == &e->points[i])
-            handle_color = BLACK;
-
-        Vector2 p = e->points[i];
-        p.y = e->rt_main.texture.height - p.y;
-        DrawCircleV(p, e->opts.handle_size, handle_color);
-    }
-
-
     /*trace("\n");*/
 
     EndMode2D();
@@ -351,13 +363,26 @@ static void env_point_add_default(Envelope_t e) {
 
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
-    // TODO: Задать размер текстуры из опций
     e->rt_main = LoadRenderTexture(opts.tex_w, opts.tex_h);
-    e->rt_text = LoadRenderTexture(opts.tex_text_size, opts.tex_text_size);
+
+    // Расчет размеров текстуры
+    {
+        assert(opts.label_font_size > 0);
+        assert(opts.tex_w > 0);
+        assert(opts.tex_h > 0);
+        int tex_text_w = 128 * 3, tex_text_h = 128 * 1;
+        char buf[128] = {};
+        snprintf(buf, sizeof(buf) - 1, "{%d, %d}", opts.tex_w, opts.tex_h);
+        int text_w = MeasureText(buf, opts.label_font_size);
+        e->rt_text = LoadRenderTexture(text_w, opts.label_font_size);
+    }
+
+    assert(opts.default_points_cap > 0);
     e->poins_cap = opts.default_points_cap;
     e->points_num = 0;
     e->points = calloc(e->poins_cap, sizeof(e->points[0]));
     e->opts.name = opts.name;
+    e->opts = opts;
 
     if (opts.line_thick)
         e->opts.line_thick = opts.line_thick;
@@ -429,9 +454,8 @@ void env_point_remove(Envelope_t e, int index) {
 EnvelopeOpts env_partial_opts(EnvelopeOpts opts) {
     opts.handle_size = 20;
     opts.line_thick = 10;
-    opts.tex_text_size = 128 * 2;
     opts.default_points_cap = 1024;
-    opts.label_font_size = 34;
+    opts.label_font_size = 64;
     opts.background_color = GRAY;
     return opts;
 }
