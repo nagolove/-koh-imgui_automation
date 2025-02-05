@@ -30,8 +30,8 @@
 static const int screen_width = 1920;
 static const int screen_height = 1080;
 #else
-static const int screen_width = 1920 * 2;
-static const int screen_height = 1080 * 2;
+static const int screen_width = 1920 * 1.2;
+static const int screen_height = 1080 * 1.2;
 #endif
 
 static Camera2D camera = {0};
@@ -130,8 +130,10 @@ int main(void) {
     koh_hashers_init();
     camera.zoom = 1.0f;
     srand(time(NULL));
+
     InitWindow(screen_width, screen_height, "color worms");
-    SetWindowState(FLAG_WINDOW_UNDECORATED);
+    /*SetWindowState(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_RESIZABLE);*/
+    SetWindowState(FLAG_WINDOW_RESIZABLE);
 
     SetWindowMonitor(1);
     SetTargetFPS(60);

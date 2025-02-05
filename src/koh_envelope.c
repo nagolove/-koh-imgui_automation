@@ -1,17 +1,23 @@
 #include "koh_envelope.h"
 
+#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
+
+#include <raymath.h>
 #include "koh_routine.h"
 #include "koh_logger.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
-#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
 #include "cimgui.h"
 #include "cimgui_impl.h"
+#include "koh_timerman.h"
+
+// TODO: Сделать все на double
 
 typedef struct Envelope {
     Vector2         *points;
+    float           *lengths, *lengths_sorted;
+    float           length_full;
     int             points_num, poins_cap;
     RenderTexture2D rt_main, rt_text;
     ImVec2          img_min, img_max;
@@ -21,10 +27,22 @@ typedef struct Envelope {
     /*const char      *name;*/
     Vector2         *left, *right, *leftest, *rightest;
 
+    bool            is_playing;
+    TimerMan        *tm;
+    // Положение анимированной метки
+    Vector2         player;
     EnvelopeOpts    opts;
+    bool            baked;
 } Envelope;
 
+static Color color_active_handle = RED;
 static void env_point_add_default(Envelope_t e);
+static const Color color_player = GREEN;
+
+enum EnvelopeMode {
+    ENV_MODE_LINEAR,
+    ENV_MODE_CURVE,
+};
 
 // TODO: Придумать абстракцию для передвижения точек под курсором
 Vector2 *points_process(Envelope_t e, Vector2 pos, int *stick_index) {
@@ -40,7 +58,7 @@ Vector2 *points_process(Envelope_t e, Vector2 pos, int *stick_index) {
     return NULL;
 }
 
-static int cmp(const void *a, const void *b, void *ud) {
+static int cmp_points(const void *a, const void *b, void *ud) {
     const Vector2 *_a = a;
     const Vector2 *_b = b;
     return _a->x - _b->x;
@@ -59,7 +77,9 @@ void env_point_add(Envelope_t e, Vector2 pos) {
     e->points_num++;
 
     // XXX: Проверить сортировку
-    koh_qsort(e->points, e->points_num, sizeof(e->points[0]), cmp, NULL);
+    size_t sz = sizeof(e->points[0]);
+    koh_qsort(e->points, e->points_num, sz, cmp_points, NULL);
+    e->baked = false;
 }
 
 // TODO: Добавить режимы:
@@ -166,6 +186,29 @@ void draw_curves(Envelope_t e) {
     }
 }
 
+static void env_draw_cursor_text(Envelope_t e, Vector2 cursor_point) {
+    int tex_w = e->rt_text.texture.width,
+        tex_h = e->rt_text.texture.height; 
+    Rectangle dest = { cursor_point.x, cursor_point.y, tex_w, tex_h };
+
+    const int label_font_size = e->opts.label_font_size;
+
+    /*trace("env_draw: cursor_point %s\n", Vector2_tostr(cursor_point));*/
+
+    if (cursor_point.x >= tex_w) {
+        dest.x -= tex_w;
+    }
+
+    if (cursor_point.y - label_font_size >= tex_w) {
+        dest.y -= label_font_size;
+    }
+
+    DrawTexturePro(e->rt_text.texture, 
+        (Rectangle) { 0., 0., tex_w, tex_h }, 
+        dest,
+        (Vector2) { 0, 0}, 0., WHITE
+    );
+}
 
 static void env_draw(Envelope_t e) {
     Vector2 cursor_point = {};
@@ -229,51 +272,15 @@ static void env_draw(Envelope_t e) {
         DrawCircleV(
             cursor_point,
             e->opts.handle_size + e->opts.handle_size / 2.,
-            RED
+            color_active_handle
         );
 
-        int tex_w = e->rt_text.texture.width,
-            tex_h = e->rt_text.texture.height; 
-        int half_tex_w = tex_w / 2, half_tex_h = tex_h / 2;
-        Rectangle dest = {
-            /*cursor_point.x - half_tex_w,*/
-            /*cursor_point.y - half_tex_w,*/
-            cursor_point.x,
-            cursor_point.y,
-            tex_w, tex_h
-        };
-
-        if (IsKeyDown(KEY_LEFT_SHIFT)) {
-            /*dest.x += tex_w;*/
-            DrawTexturePro(e->rt_text.texture, 
-                (Rectangle) { 0., 0., tex_w, tex_h }, 
-                dest,
-                (Vector2) { half_tex_w, half_tex_h },
-                0., WHITE
-            );
-        } else {
-            trace("env_draw: cursor_point %s\n", Vector2_tostr(cursor_point));
-            if (e->rightest == e->under_cursor)
-                dest.x -= tex_w;
-
-            if (cursor_point.y < e->opts.label_font_size) {
-                trace("env_draw: upper\n");
-                dest.y += e->opts.label_font_size;
-            }
-
-            if (cursor_point.y + e->opts.label_font_size >= e->rt_text.texture.height) {
-                trace("env_draw: upper\n");
-                dest.y -= e->opts.label_font_size;
-            }
-
-            DrawTexturePro(e->rt_text.texture, 
-                (Rectangle) { 0., 0., tex_w, tex_h }, 
-                dest,
-                (Vector2) { 0, 0}, 0., WHITE
-            );
-        }
+        env_draw_cursor_text(e, cursor_point);
     }
-    /*trace("\n");*/
+
+    if (e->is_playing) {
+        DrawCircleV(e->player, e->opts.handle_size, color_player);
+    }
 
     EndMode2D();
     EndTextureMode();
@@ -282,9 +289,48 @@ static void env_draw(Envelope_t e) {
 void env_reset(Envelope_t e) {
     trace("env_reset: name '%s'\n", e->opts.name);
     memset(e->points, 0, sizeof(e->points[0]) * e->poins_cap);
+    memset(e->lengths, 0, sizeof(e->lengths[0]) * e->poins_cap);
+    memset(e->lengths_sorted, 0, sizeof(e->lengths_sorted[0]) * e->poins_cap);
     e->points_num = 0;
+    e->length_full = 0;
+    e->baked = false;
 
     env_point_add_default(e);
+}
+
+bool on_anim_update(Timer *t) {
+    trace("on_anim_update: amount %f\n", t->amount);
+    Envelope_t e = t->data;
+    e->player.y = env_eval(e, t->amount);
+    e->player.x = t->amount * e->rt_main.texture.width;
+
+    // Возможность остановки по нажатию 'stop'
+    return !e->is_playing;
+}
+
+void on_anim_stop(Timer *t) {
+    trace("on_anim_stop:\n");
+    Envelope_t e = t->data;
+    e->is_playing = false;
+}
+
+void env_stop(Envelope_t e) {
+    e->is_playing = false;
+}
+
+void env_play(Envelope_t e) {
+    if (e->is_playing)
+        return;
+
+    e->is_playing = true;
+    e->player.x = 0.;
+    e->player.y = 0.;
+    timerman_add(e->tm, (TimerDef) {
+        .data = e,
+        .on_update = on_anim_update,
+        .on_stop = on_anim_stop,
+        .duration = 3.,
+    });
 }
 
 void env_draw_imgui_opts(Envelope_t e) {
@@ -297,6 +343,19 @@ void env_draw_imgui_opts(Envelope_t e) {
     if (igSmallButton(buf)) {
         env_reset(e);
     }
+
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "play##%s", e->opts.name);
+    if (igSmallButton(buf)) {
+        env_play(e);
+    }
+
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "stop##%s", e->opts.name);
+    if (igSmallButton(buf)) {
+        env_stop(e);
+    }
+
 
     /*
     igSameLine(0., -1.);
@@ -322,15 +381,12 @@ void env_input_reset(Envelope_t e) {
 }
 
 void env_draw_imgui_env(Envelope_t e) {
+    timerman_update(e->tm);
+
     if (e->opts.name) 
         igText("%s", e->opts.name);
 
-    //igPushItemFlag(ImGuiItemFlags_Disabled, true);
-    //igButton("Disabled Button", (ImVec2){});
-    //igBeginDisabled(true);
     rlImGuiImage(&e->rt_main.texture);
-    /*igEndDisabled();*/
-    /*igPopItemFlag();*/
 
     igGetItemRectMin(&e->img_min);
     igGetItemRectMax(&e->img_max);
@@ -363,6 +419,9 @@ static void env_point_add_default(Envelope_t e) {
 
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
+    e->baked = false;
+    e->is_playing = false;
+    e->tm = timerman_new(1, "envelope player");
     e->rt_main = LoadRenderTexture(opts.tex_w, opts.tex_h);
 
     // Расчет размеров текстуры
@@ -370,7 +429,6 @@ Envelope_t env_new(EnvelopeOpts opts) {
         assert(opts.label_font_size > 0);
         assert(opts.tex_w > 0);
         assert(opts.tex_h > 0);
-        int tex_text_w = 128 * 3, tex_text_h = 128 * 1;
         char buf[128] = {};
         snprintf(buf, sizeof(buf) - 1, "{%d, %d}", opts.tex_w, opts.tex_h);
         int text_w = MeasureText(buf, opts.label_font_size);
@@ -381,6 +439,9 @@ Envelope_t env_new(EnvelopeOpts opts) {
     e->poins_cap = opts.default_points_cap;
     e->points_num = 0;
     e->points = calloc(e->poins_cap, sizeof(e->points[0]));
+    e->lengths = calloc(e->poins_cap, sizeof(e->lengths[0]));
+    e->lengths_sorted = calloc(e->poins_cap, sizeof(e->lengths_sorted[0]));
+    e->length_full = 0;
     e->opts.name = opts.name;
     e->opts = opts;
 
@@ -397,6 +458,21 @@ Envelope_t env_new(EnvelopeOpts opts) {
 }
 
 void env_free(Envelope_t e) {
+    if (e->tm) {
+        timerman_free(e->tm);
+        e->tm = NULL;
+    }
+
+    if (e->lengths_sorted) {
+        free(e->lengths_sorted);
+        e->lengths_sorted = NULL;
+    }
+
+    if (e->lengths) {
+        free(e->lengths);
+        e->lengths = NULL;
+    }
+
     if (e->points) {
         free(e->points);
         e->points = NULL;
@@ -417,14 +493,69 @@ void env_free(Envelope_t e) {
     free(e);
 }
 
+static int cmp(const void *a, const void *b, void *ud) {
+    const float *_a = a, *_b = b;
+    return *_a - *_b;
+}
+
+static float len(Vector2 a, Vector2 b) {
+    const float t = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y);
+    return sqrtf(t * t);
+}
+
+void env_bake(Envelope_t e) {
+    // Расчитать длину каждого сегмента
+    const int lengths_num = e->points_num - 1;
+    for (int i = 0; i < lengths_num; i++) {
+        e->lengths[i] = len(e->points[i], e->points[i + 1]);
+    }
+
+    for (int i = 0; i < lengths_num; i++) {
+        trace("env_bake: len %f\n", e->lengths[i]);
+    }
+    trace("\n");
+
+    for (int i = 0; i < lengths_num; i++) {
+        e->lengths_sorted[i] = e->lengths[i];
+    }
+    size_t sz = sizeof(e->lengths_sorted[0]);
+    koh_qsort(e->lengths_sorted, lengths_num, sz, cmp, NULL);
+
+    for (int i = 0; i < lengths_num; i++) {
+        trace("env_bake: len sorted %f\n", e->lengths_sorted[i]);
+    }
+    trace("\n");
+
+    // Расчитать длину всей кривой
+    // Сперва складывать наименьшие величины
+    float length_full = 0.f;
+    for (int i = 0; i < e->points_num; i++) {
+        trace("env_bak: delta %f\n", e->lengths_sorted[i]);
+        length_full += e->lengths_sorted[i];
+    }
+
+    e->baked = true;
+}
+
 float env_eval(Envelope_t e, float amount) {
     if (amount < 0)
         amount = 0;
     if (amount > 1.f)
         amount = 1.f;
 
-    // TODO: Всегда использовать линейный режим, когда использовать 
-    // режим кривых?
+    if (!e->baked) 
+        env_bake(e);
+
+    float path_len = 0;
+
+    /*
+    Если для сохранения значения интерполяции использовать только amount,
+    то непонятно как делать?
+
+    Придется каждый раз, с самого начала считать, пока не будет достигнуто
+    значение amount и после него просчитывать еще несколько итераций
+     */
+
     return 0.;
 }
 
@@ -449,6 +580,8 @@ void env_point_remove(Envelope_t e, int index) {
 
     if (e->points_num > 0)
         e->points_num--;
+
+    e->baked = false;
 }
 
 EnvelopeOpts env_partial_opts(EnvelopeOpts opts) {
