@@ -13,7 +13,7 @@
 #include "koh_timerman.h"
 
 // TODO: Сделать все на double
-
+// TODO: Сделать высоту первой точки - нулем, при любом её положении
 typedef struct Envelope {
     Vector2         *points;
     float           *lengths, *lengths_sorted;
@@ -27,22 +27,31 @@ typedef struct Envelope {
     /*const char      *name;*/
     Vector2         *left, *right, *leftest, *rightest;
 
-    bool            is_playing;
+    bool            is_playing, draw_ruler;
     TimerMan        *tm;
     // Положение анимированной метки
     Vector2         player;
     EnvelopeOpts    opts;
     bool            baked;
+    float           last_amount;
 } Envelope;
 
-static Color color_active_handle = RED;
-static void env_point_add_default(Envelope_t e);
+static const Color color_active_handle = RED;
 static const Color color_player = GREEN;
+static const double play_duration = 10.;
+static const Color color_line_default = BLUE;
+static const Color color_line_marked = GREEN;
+static const Color color_ruler = BLACK;
+static const Color color_handle = VIOLET;
+static const Color color_handle_ruler = YELLOW;
+static const Color color_handle_supreme = BLACK;
 
 enum EnvelopeMode {
     ENV_MODE_LINEAR,
     ENV_MODE_CURVE,
 };
+
+static void env_point_add_default(Envelope_t e);
 
 // TODO: Придумать абстракцию для передвижения точек под курсором
 Vector2 *points_process(Envelope_t e, Vector2 pos, int *stick_index) {
@@ -117,6 +126,8 @@ static void env_input(Envelope_t e) {
     //TODO: если курсор на крайнем кружке, то создавать left, right
 
     if (e->stick_index != -1 && sticked) {
+        e->draw_ruler = true;
+
         // Первую и последнюю вершину можно двигать только вверх и вниз
         if (e->stick_index == 0 || e->stick_index == e->points_num - 1) {
             e->points[e->stick_index].y = e->cursor_pos.y;
@@ -141,7 +152,8 @@ static void env_input(Envelope_t e) {
             if (e->points && in_range)
                 e->points[e->stick_index] = cursor;
         }
-    }
+    } else 
+        e->draw_ruler = false;
 
 }
 
@@ -152,7 +164,7 @@ void draw_lines(Envelope_t e) {
     for (int i = 1; i < e->points_num ; i++) {
         Vector2 p2 = e->points[i];
         p2.y = tex_height - p2.y;
-        DrawLineEx(p1, p2, e->opts.line_thick, BLUE);
+        DrawLineEx(p1, p2, e->opts.line_thick, color_line_default);
         p1 = p2;
     }
 }
@@ -210,31 +222,95 @@ static void env_draw_cursor_text(Envelope_t e, Vector2 cursor_point) {
     );
 }
 
+static void draw_text(Envelope_t e, Vector2 *cursor_point) {
+    assert(cursor_point);
+    *cursor_point = (Vector2){
+        .y = e->rt_main.texture.height - e->under_cursor->y,
+        .x = e->under_cursor->x,
+    };
+
+    char buf[64] = {};
+    sprintf(buf, "{%d, %d}", (int)cursor_point->x, (int)cursor_point->y);
+
+    BeginTextureMode(e->rt_text);
+    BeginMode2D((Camera2D) { .zoom = 1., });
+    Color tmp = e->opts.background_color;
+    tmp.a = 0;
+
+    tmp = BROWN;
+
+    ClearBackground(tmp);
+    DrawText(buf, 0, 0, e->opts.label_font_size, BLACK);
+    EndMode2D();
+    EndTextureMode();
+}
+
+static void draw_lines_marked(Envelope_t e) {
+    Vector2 p1 = e->points[0];
+    const float tex_height = e->rt_main.texture.height;
+    p1.y = tex_height - p1.y;
+    float len = 0;
+    float per = e->last_amount * e->length_full;
+    /*trace("draw_lines_marker: per %f\n", per);*/
+    for (int i = 1; i < e->points_num ; i++) {
+        if (len >= per)
+            break;
+
+        Vector2 p2 = e->points[i];
+        p2.y = tex_height - p2.y;
+        DrawLineEx(p1, p2, e->opts.line_thick, color_line_marked);
+        len += e->lengths[i - 1];
+        /*trace("draw_lines_marker: len %f\n", len);*/
+        p1 = p2;
+    }
+}
+
+static void draw_ruler(Envelope_t e) {
+    if (!e->points) 
+        return;
+
+    int tex_w = e->rt_main.texture.width,
+        tex_h = e->rt_main.texture.height;
+    Vector2 p1 = { 0., e->cursor_pos.y}, 
+            p2 = { tex_w, e->cursor_pos.y };
+
+    p1.y = tex_h - p1.y;
+    p2.y = tex_h - p2.y;
+
+    DrawLineV(p1, p2, color_ruler);
+
+    for (int i = 0; i < e->points_num; i++) {
+        Vector2 point = e->points[i];
+        point.y = tex_h - point.y;
+        bool has = CheckCollisionPointLine(point, p1, p2, 1);
+        if (has) {
+            const int handle_size = e->opts.handle_size;
+            DrawCircleV(point, handle_size, color_handle_ruler);
+        }
+    }
+
+
+    // TODO: Сделать линейку для деления по частям
+    /*
+    int stick_index = e->stick_index;
+    if (stick_index > 0 && stick_index + 1 < e->points_num) {
+        int left = stick_index - 1,
+            right = stick_index + 1;
+
+        Vector2 q1 = e->points[left], q2 = e->points[right];
+        q1.y = tex_h - q1.y;
+        q2.y = tex_h - q2.y;
+        DrawLineV(q1, q2, color_ruler);
+    }
+    */
+}
+
 static void env_draw(Envelope_t e) {
     Vector2 cursor_point = {};
 
     if (e->under_cursor) {
-        cursor_point = (Vector2){
-            .y = e->rt_main.texture.height - e->under_cursor->y,
-            .x = e->under_cursor->x,
-        };
-
-        char buf[64] = {};
-        sprintf(buf, "{%d, %d}", (int)cursor_point.x, (int)cursor_point.y);
-
-        BeginTextureMode(e->rt_text);
-        BeginMode2D((Camera2D) { .zoom = 1., });
-        Color tmp = e->opts.background_color;
-        tmp.a = 0;
-
-        tmp = BROWN;
-
-        ClearBackground(tmp);
-        DrawText(buf, 0, 0, e->opts.label_font_size, BLACK);
-        EndMode2D();
-        EndTextureMode();
+        draw_text(e, &cursor_point);
     }
-
 
     BeginTextureMode(e->rt_main);
     BeginMode2D((Camera2D) { .zoom = 1., });
@@ -252,21 +328,32 @@ static void env_draw(Envelope_t e) {
 
     draw_lines(e);
 
-    /*draw_curves(e);*/
+    if (e->baked) {
+        // TODO: Рисовать предыдущие отрезки с подсветкой, кроме текущего
+        draw_lines_marked(e);
+    }
 
+    /*draw_curves(e);*/
+    
     // Рисовать кружки ручек
     if (e->points) {
         for (int i = 0; i < e->points_num; i++) {
-            Color handle_color = VIOLET;
+            Color color = color_handle;
 
             if (e->leftest == &e->points[i] || e->rightest == &e->points[i])
-                handle_color = BLACK;
+                color = color_handle_supreme;
 
             Vector2 p = e->points[i];
             p.y = e->rt_main.texture.height - p.y;
-            DrawCircleV(p, e->opts.handle_size, handle_color);
+            DrawCircleV(p, e->opts.handle_size, color);
         }
     }
+
+    if (e->draw_ruler) {
+        // Рисовать горизонтальную линию для выравнивания по высоте
+        draw_ruler(e);
+    }
+
 
     if (e->under_cursor) {
         DrawCircleV(
@@ -299,7 +386,7 @@ void env_reset(Envelope_t e) {
 }
 
 bool on_anim_update(Timer *t) {
-    trace("on_anim_update: amount %f\n", t->amount);
+    //trace("on_anim_update: amount %f\n", t->amount);
     Envelope_t e = t->data;
     e->player.y = env_eval(e, t->amount);
     e->player.x = t->amount * e->rt_main.texture.width;
@@ -316,6 +403,12 @@ void on_anim_stop(Timer *t) {
 
 void env_stop(Envelope_t e) {
     e->is_playing = false;
+    timerman_clear(e->tm);
+    timerman_pause(e->tm, false);
+}
+
+static void env_pause(Envelope_t e) {
+    timerman_pause(e->tm, !timerman_is_paused(e->tm));
 }
 
 void env_play(Envelope_t e) {
@@ -329,7 +422,7 @@ void env_play(Envelope_t e) {
         .data = e,
         .on_update = on_anim_update,
         .on_stop = on_anim_stop,
-        .duration = 3.,
+        .duration = play_duration,
     });
 }
 
@@ -348,6 +441,12 @@ void env_draw_imgui_opts(Envelope_t e) {
     snprintf(buf, sizeof(buf) - 1, "play##%s", e->opts.name);
     if (igSmallButton(buf)) {
         env_play(e);
+    }
+
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "pause##%s", e->opts.name);
+    if (igSmallButton(buf)) {
+        env_pause(e);
     }
 
     igSameLine(0, -1);
@@ -419,6 +518,7 @@ static void env_point_add_default(Envelope_t e) {
 
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
+    e->draw_ruler = false;
     e->baked = false;
     e->is_playing = false;
     e->tm = timerman_new(1, "envelope player");
@@ -530,9 +630,12 @@ void env_bake(Envelope_t e) {
     // Сперва складывать наименьшие величины
     float length_full = 0.f;
     for (int i = 0; i < e->points_num; i++) {
-        trace("env_bak: delta %f\n", e->lengths_sorted[i]);
+        /*trace("env_bak: delta %f\n", e->lengths_sorted[i]);*/
         length_full += e->lengths_sorted[i];
     }
+
+    e->length_full = length_full;
+    trace("length_full: %f\n", e->length_full);
 
     e->baked = true;
 }
@@ -555,6 +658,8 @@ float env_eval(Envelope_t e, float amount) {
     Придется каждый раз, с самого начала считать, пока не будет достигнуто
     значение amount и после него просчитывать еще несколько итераций
      */
+
+    e->last_amount = amount;
 
     return 0.;
 }
