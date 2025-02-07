@@ -16,7 +16,7 @@
 // TODO: Сделать высоту первой точки - нулем, при любом её положении
 typedef struct Envelope {
     Vector2         *points;
-    float           *lengths, *lengths_sorted;
+    float           *lengths, *lengths_sorted, *angles;
     float           length_full;
     int             points_num, poins_cap;
     RenderTexture2D rt_main, rt_text;
@@ -32,7 +32,7 @@ typedef struct Envelope {
     // Положение анимированной метки
     Vector2         player;
     EnvelopeOpts    opts;
-    bool            baked;
+    bool            baked, snap2grid;
     float           last_amount;
 } Envelope;
 
@@ -45,6 +45,8 @@ static const Color color_ruler = BLACK;
 static const Color color_handle = VIOLET;
 static const Color color_handle_ruler = YELLOW;
 static const Color color_handle_supreme = BLACK;
+static const float player_radius = 60.f;
+static const int grid_step = 10;
 
 enum EnvelopeMode {
     ENV_MODE_LINEAR,
@@ -91,6 +93,22 @@ void env_point_add(Envelope_t e, Vector2 pos) {
     e->baked = false;
 }
 
+// XXX: Если есть созданные точки кривой и включено прилипание, то 
+// корректировать их? Иначе может оказаться, что новые точки не смогут
+// подстраиваться к уже созданным.
+static void check_snap(Envelope_t e) {
+    if (!e->snap2grid || e->stick_index == -1)
+        return;
+
+    Vector2 *p = &e->points[e->stick_index];
+
+    int dx = (int)p->x % grid_step,
+        dy = (int)p->y % grid_step;
+
+    p->x -= dx;
+    p->y -= dy;
+}
+
 // TODO: Добавить режимы:
 // с зажатым шифтом - перемещение только по горизонтали,
 // с зажатым контрол - только по вертикали
@@ -130,7 +148,10 @@ static void env_input(Envelope_t e) {
 
         // Первую и последнюю вершину можно двигать только вверх и вниз
         if (e->stick_index == 0 || e->stick_index == e->points_num - 1) {
+
             e->points[e->stick_index].y = e->cursor_pos.y;
+            check_snap(e);
+
         } else {
 
             if (e->stick_index >= 1) {
@@ -149,8 +170,10 @@ static void env_input(Envelope_t e) {
 
             bool in_range = e->stick_index >= 0 &&
                             e->stick_index < e->points_num;
-            if (e->points && in_range)
+            if (e->points && in_range) {
                 e->points[e->stick_index] = cursor;
+                check_snap(e);
+            }
         }
     } else 
         e->draw_ruler = false;
@@ -230,7 +253,17 @@ static void draw_text(Envelope_t e, Vector2 *cursor_point) {
     };
 
     char buf[64] = {};
-    sprintf(buf, "{%d, %d}", (int)cursor_point->x, (int)cursor_point->y);
+    /*sprintf(buf, "{%d, %d}", (int)cursor_point->x, (int)cursor_point->y);*/
+
+    if (e->stick_index != -1) {
+        sprintf(
+            buf, "{%d, %d} %f",
+            (int)cursor_point->x, (int)cursor_point->y,
+            e->angles[e->stick_index]
+        );
+    } else {
+        sprintf(buf, "{%d, %d}", (int)cursor_point->x, (int)cursor_point->y);
+    }
 
     BeginTextureMode(e->rt_text);
     BeginMode2D((Camera2D) { .zoom = 1., });
@@ -305,6 +338,28 @@ static void draw_ruler(Envelope_t e) {
     */
 }
 
+/*
+static void draw_angles(Envelope_t e) {
+    int tex_w = e->rt_main.texture.width,
+        tex_h = e->rt_main.texture.height;
+
+    for (int i = 0; i < e->points_num - 1; i++) {
+
+        Vector2 p1 = e->points[i],
+                p2 = e->points[i + 1];
+
+        p1.y = tex_h - p1.y;
+        p2.y = tex_h - p2.y;
+
+        char buf[128] = {};
+        snprintf(buf, sizeof(buf) - 1, "%f", e->angles[i]);
+        Font fnt = GetFontDefault();
+        DrawTextPro(fnt, buf, p1, (Vector2) {}, 180, 40, 0, BLACK);
+    }
+
+}
+*/
+
 static void env_draw(Envelope_t e) {
     Vector2 cursor_point = {};
 
@@ -322,7 +377,7 @@ static void env_draw(Envelope_t e) {
     CoSysOpts cosys_opts = {
         .dest = { 0., 0., e->rt_main.texture.width, e->rt_main.texture.height},
         .color = color,
-        .step = 10.f,
+        .step = grid_step,
     };
     cosys_draw(cosys_opts);
 
@@ -366,7 +421,7 @@ static void env_draw(Envelope_t e) {
     }
 
     if (e->is_playing) {
-        DrawCircleV(e->player, e->opts.handle_size, color_player);
+        DrawCircleV(e->player, player_radius, color_player);
     }
 
     EndMode2D();
@@ -377,6 +432,7 @@ void env_reset(Envelope_t e) {
     trace("env_reset: name '%s'\n", e->opts.name);
     memset(e->points, 0, sizeof(e->points[0]) * e->poins_cap);
     memset(e->lengths, 0, sizeof(e->lengths[0]) * e->poins_cap);
+    memset(e->angles, 0, sizeof(e->angles[0]) * e->poins_cap);
     memset(e->lengths_sorted, 0, sizeof(e->lengths_sorted[0]) * e->poins_cap);
     e->points_num = 0;
     e->length_full = 0;
@@ -455,6 +511,9 @@ void env_draw_imgui_opts(Envelope_t e) {
         env_stop(e);
     }
 
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "snap to grid##%s", e->opts.name);
+    igCheckbox(buf, &e->snap2grid);
 
     /*
     igSameLine(0., -1.);
@@ -482,8 +541,10 @@ void env_input_reset(Envelope_t e) {
 void env_draw_imgui_env(Envelope_t e) {
     timerman_update(e->tm);
 
-    if (e->opts.name) 
+    if (e->opts.name) {
+        // XXX: Нужно здесь ##оригинальный_номер добавлять?
         igText("%s", e->opts.name);
+    }
 
     rlImGuiImage(&e->rt_main.texture);
 
@@ -518,6 +579,7 @@ static void env_point_add_default(Envelope_t e) {
 
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
+    e->snap2grid = false;
     e->draw_ruler = false;
     e->baked = false;
     e->is_playing = false;
@@ -530,7 +592,13 @@ Envelope_t env_new(EnvelopeOpts opts) {
         assert(opts.tex_w > 0);
         assert(opts.tex_h > 0);
         char buf[128] = {};
-        snprintf(buf, sizeof(buf) - 1, "{%d, %d}", opts.tex_w, opts.tex_h);
+        snprintf(
+                buf, sizeof(buf) - 1,
+                // позиция и угол
+                "{%d, %d}, %f",
+                opts.tex_w, opts.tex_h,
+                0.0001
+        );
         int text_w = MeasureText(buf, opts.label_font_size);
         e->rt_text = LoadRenderTexture(text_w, opts.label_font_size);
     }
@@ -540,6 +608,7 @@ Envelope_t env_new(EnvelopeOpts opts) {
     e->points_num = 0;
     e->points = calloc(e->poins_cap, sizeof(e->points[0]));
     e->lengths = calloc(e->poins_cap, sizeof(e->lengths[0]));
+    e->angles = calloc(e->poins_cap, sizeof(e->angles[0]));
     e->lengths_sorted = calloc(e->poins_cap, sizeof(e->lengths_sorted[0]));
     e->length_full = 0;
     e->opts.name = opts.name;
@@ -566,6 +635,11 @@ void env_free(Envelope_t e) {
     if (e->lengths_sorted) {
         free(e->lengths_sorted);
         e->lengths_sorted = NULL;
+    }
+
+    if (e->angles) {
+        free(e->angles);
+        e->angles = NULL;
     }
 
     if (e->lengths) {
@@ -610,10 +684,10 @@ void env_bake(Envelope_t e) {
         e->lengths[i] = len(e->points[i], e->points[i + 1]);
     }
 
-    for (int i = 0; i < lengths_num; i++) {
+    /* for (int i = 0; i < lengths_num; i++) {
         trace("env_bake: len %f\n", e->lengths[i]);
     }
-    trace("\n");
+    trace("\n"); */
 
     for (int i = 0; i < lengths_num; i++) {
         e->lengths_sorted[i] = e->lengths[i];
@@ -621,10 +695,10 @@ void env_bake(Envelope_t e) {
     size_t sz = sizeof(e->lengths_sorted[0]);
     koh_qsort(e->lengths_sorted, lengths_num, sz, cmp, NULL);
 
-    for (int i = 0; i < lengths_num; i++) {
+    /* for (int i = 0; i < lengths_num; i++) {
         trace("env_bake: len sorted %f\n", e->lengths_sorted[i]);
     }
-    trace("\n");
+    trace("\n"); */
 
     // Расчитать длину всей кривой
     // Сперва складывать наименьшие величины
@@ -636,6 +710,30 @@ void env_bake(Envelope_t e) {
 
     e->length_full = length_full;
     trace("length_full: %f\n", e->length_full);
+
+    for (int i = 0; i < e->points_num - 1; i++) {
+        Vector2 p1 = e->points[i],
+                p2 = e->points[i + 1];
+
+        Vector2 p = Vector2Normalize(Vector2Subtract(p2, p1));
+        float w = atan2f(p.x, p.y);
+
+        e->angles[i] = w;
+        trace("env_bake: w %f\n", w);
+    }
+
+    // Посчитать длины проекций
+    for (int i = 0; i < e->points_num - 1; i++) {
+        Vector2 p1 = e->points[i],
+                p2 = e->points[i + 1];
+
+        float len = Vector2Length(Vector2Subtract(p2, p1));
+        // XXX: Что за нерабочая хуйня?
+        float proj = len * cos(e->angles[i]);
+
+        float w = e->angles[i];
+        trace("env_bake: angle %f, len %f, proj %f\n", w, len, proj);
+    }
 
     e->baked = true;
 }
