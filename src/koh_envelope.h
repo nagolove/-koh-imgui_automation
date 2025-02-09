@@ -47,4 +47,4 @@ void env_point_remove(Envelope_t e, int index);
 */
 char *env_export_alloc(Envelope_t e);
 // Загрузить координаты точек из Луа строки.
-void env_export_import(Envelope_t e, const char *lua_str);
+void env_import(Envelope_t e, const char *lua_str);

@@ -11,6 +11,10 @@
 #include "cimgui.h"
 #include "cimgui_impl.h"
 #include "koh_timerman.h"
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+#include "koh_lua_tools.h"
 
 // TODO: Сделать все на double
 // TODO: Сделать высоту первой точки - нулем, при любом её положении
@@ -36,15 +40,15 @@ typedef struct Envelope {
     float           last_amount;
 } Envelope;
 
-static const Color color_active_handle = RED;
-static const Color color_player = GREEN;
-static const double play_duration = 10.;
-static const Color color_line_default = BLUE;
-static const Color color_line_marked = GREEN;
-static const Color color_ruler = BLACK;
+static const Color color_handle_active = RED;
 static const Color color_handle = VIOLET;
 static const Color color_handle_ruler = YELLOW;
 static const Color color_handle_supreme = BLACK;
+static const Color color_line_default = BLUE;
+static const Color color_line_marked = GREEN;
+static const Color color_player = GREEN;
+static const Color color_ruler = BLACK;
+static const double player_duration = 10.;
 static const float player_radius = 60.f;
 static const int grid_step = 10;
 
@@ -53,11 +57,13 @@ enum EnvelopeMode {
     ENV_MODE_CURVE,
 };
 
+static void env_new_points(Envelope_t e, size_t cap);
 static void env_point_add_default(Envelope_t e);
+static void env_free_points(Envelope_t e);
 
 // TODO: Придумать абстракцию для передвижения точек под курсором
+// Поиск точки под курсором
 Vector2 *points_process(Envelope_t e, Vector2 pos, int *stick_index) {
-    /*trace("points_process: pos %s\n", Vector2_tostr(pos));*/
     for (int i = 0; i < e->points_num; i++) {
         Vector2 p = e->points[i];
         if (CheckCollisionPointCircle(pos, p, e->opts.handle_size)) {
@@ -77,7 +83,11 @@ static int cmp_points(const void *a, const void *b, void *ud) {
 
 void env_point_add(Envelope_t e, Vector2 pos) {
     if (e->points_num + 1 == e->poins_cap) {
+
         trace("points_add: not enough memory, skipping\n");
+        /*env_free_points(e);*/
+        env_new_points(e, (e->poins_cap + 1) * 1.5);
+
         return;
     }
 
@@ -109,6 +119,38 @@ static void check_snap(Envelope_t e) {
     p->y -= dy;
 }
 
+static void handle_move(Envelope_t e) {
+    // Первую и последнюю вершину можно двигать только вверх и вниз
+    if (e->stick_index == 0 || e->stick_index == e->points_num - 1) {
+
+        e->points[e->stick_index].y = e->cursor_pos.y;
+        check_snap(e);
+
+    } else {
+
+        if (e->stick_index >= 1) {
+            e->left = &e->points[e->stick_index - 1];
+        }
+        if (e->stick_index + 1 < e->points_num) {
+            e->right = &e->points[e->stick_index + 1];
+        }
+
+        // Ограничение перемещения точки по горизонтали
+        Vector2 cursor = e->cursor_pos;
+        if (e->left && e->cursor_pos.x < e->left->x)
+            cursor.x = e->left->x;
+        if (e->right && e->cursor_pos.x > e->right->x)
+            cursor.x = e->right->x;
+
+        bool in_range = e->stick_index >= 0 &&
+                        e->stick_index < e->points_num;
+        if (e->points && in_range) {
+            e->points[e->stick_index] = cursor;
+            check_snap(e);
+        }
+    }
+}
+
 // TODO: Добавить режимы:
 // с зажатым шифтом - перемещение только по горизонтали,
 // с зажатым контрол - только по вертикали
@@ -121,9 +163,6 @@ static void env_input(Envelope_t e) {
         GetMousePosition(), Im2Vec2(e->img_min)
     );
 
-    /*e->stick_index = -1;*/
-
-    // Поиск точки под курсором
     e->under_cursor = points_process(e, e->cursor_pos, &e->stick_index);
 
     bool sticked = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
@@ -141,40 +180,9 @@ static void env_input(Envelope_t e) {
     e->leftest = &e->points[0];
     e->rightest = &e->points[e->points_num - 1];
 
-    //TODO: если курсор на крайнем кружке, то создавать left, right
-
     if (e->stick_index != -1 && sticked) {
         e->draw_ruler = true;
-
-        // Первую и последнюю вершину можно двигать только вверх и вниз
-        if (e->stick_index == 0 || e->stick_index == e->points_num - 1) {
-
-            e->points[e->stick_index].y = e->cursor_pos.y;
-            check_snap(e);
-
-        } else {
-
-            if (e->stick_index >= 1) {
-                e->left = &e->points[e->stick_index - 1];
-            }
-            if (e->stick_index + 1 < e->points_num) {
-                e->right = &e->points[e->stick_index + 1];
-            }
-
-            // Ограничение перемещения точки по горизонтали
-            Vector2 cursor = e->cursor_pos;
-            if (e->left && e->cursor_pos.x < e->left->x)
-                cursor.x = e->left->x;
-            if (e->right && e->cursor_pos.x > e->right->x)
-                cursor.x = e->right->x;
-
-            bool in_range = e->stick_index >= 0 &&
-                            e->stick_index < e->points_num;
-            if (e->points && in_range) {
-                e->points[e->stick_index] = cursor;
-                check_snap(e);
-            }
-        }
+        handle_move(e);
     } else 
         e->draw_ruler = false;
 
@@ -282,20 +290,25 @@ static void draw_lines_marked(Envelope_t e) {
     Vector2 p1 = e->points[0];
     const float tex_height = e->rt_main.texture.height;
     p1.y = tex_height - p1.y;
-    float len = 0;
-    float per = e->last_amount * e->length_full;
+    float cur_len = 0;
+    float reached_len = e->last_amount * e->length_full;
     /*trace("draw_lines_marker: per %f\n", per);*/
-    for (int i = 1; i < e->points_num ; i++) {
-        if (len >= per)
+
+    for (int i = 0; i < e->points_num; i++) {
+        if (cur_len >= reached_len) {
             break;
+        }
 
         Vector2 p2 = e->points[i];
         p2.y = tex_height - p2.y;
         DrawLineEx(p1, p2, e->opts.line_thick, color_line_marked);
-        len += e->lengths[i - 1];
+        cur_len += cos(e->angles[i]) / e->lengths[i];
         /*trace("draw_lines_marker: len %f\n", len);*/
         p1 = p2;
     }
+
+    /*trace("draw_lines_marker: i %d\n", i);*/
+
 }
 
 static void draw_ruler(Envelope_t e) {
@@ -414,13 +427,14 @@ static void env_draw(Envelope_t e) {
         DrawCircleV(
             cursor_point,
             e->opts.handle_size + e->opts.handle_size / 2.,
-            color_active_handle
+            color_handle_active
         );
 
         env_draw_cursor_text(e, cursor_point);
     }
 
     if (e->is_playing) {
+        DrawLine(e->player.x, 0, e->player.x, e->rt_main.texture.width, BLACK);
         DrawCircleV(e->player, player_radius, color_player);
     }
 
@@ -478,7 +492,7 @@ void env_play(Envelope_t e) {
         .data = e,
         .on_update = on_anim_update,
         .on_stop = on_anim_stop,
-        .duration = play_duration,
+        .duration = player_duration,
     });
 }
 
@@ -492,6 +506,34 @@ void env_draw_imgui_opts(Envelope_t e) {
     if (igSmallButton(buf)) {
         env_reset(e);
     }
+
+    const char *fname = "lines.lua";
+
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "export##%s", e->opts.name);
+    if (igSmallButton(buf)) {
+        const char *str = env_export_alloc(e);
+        if (!koh_file_write(fname, str, strlen(str))) {
+            trace("env_draw_imgui_opts: could not save to file '%s'\n", fname);
+        }
+    }
+
+    igSameLine(0, -1);
+    snprintf(buf, sizeof(buf) - 1, "import##%s", e->opts.name);
+    if (igSmallButton(buf)) {
+        char *str = NULL;
+        size_t size = 0;
+        if (!koh_file_read_alloc(fname, &str, &size)) {
+            trace("env_draw_imgui_opts: could not save to file '%s'\n", fname);
+        }
+
+        if (str) {
+            env_import(e, str);
+            free(str);
+        }
+    }
+
+
 
     igSameLine(0, -1);
     snprintf(buf, sizeof(buf) - 1, "play##%s", e->opts.name);
@@ -514,22 +556,6 @@ void env_draw_imgui_opts(Envelope_t e) {
     igSameLine(0, -1);
     snprintf(buf, sizeof(buf) - 1, "snap to grid##%s", e->opts.name);
     igCheckbox(buf, &e->snap2grid);
-
-    /*
-    igSameLine(0., -1.);
-    if (igSmallButton("copy")) {
-        char *data_str = env_export_alloc(e);
-        if (data_str) {
-            SetClipboardText(data_str);
-            free(data_str);
-        }
-    }
-    igSameLine(0., -1.);
-    if (igSmallButton("paste")) {
-        const char *data_str = GetClipboardText();
-        env_export_import(e, data_str);
-    }
-    */
 
 }
 
@@ -577,6 +603,17 @@ static void env_point_add_default(Envelope_t e) {
     env_point_add(e, (Vector2) {  t.width, t.height});
 }
 
+static void env_new_points(Envelope_t e, size_t cap) {
+    env_free_points(e);
+    e->poins_cap = cap;
+    e->points = realloc(e->points, cap * sizeof(e->points[0]));
+    e->lengths = realloc(e->lengths, cap * sizeof(e->lengths[0]));
+    e->angles = realloc(e->angles, cap * sizeof(e->angles[0]));
+    e->lengths_sorted = realloc(
+        e->lengths_sorted, cap * sizeof(e->lengths_sorted[0])
+    );
+}
+
 Envelope_t env_new(EnvelopeOpts opts) {
     Envelope_t e = calloc(1, sizeof(*e));
     e->snap2grid = false;
@@ -604,16 +641,14 @@ Envelope_t env_new(EnvelopeOpts opts) {
     }
 
     assert(opts.default_points_cap > 0);
-    e->poins_cap = opts.default_points_cap;
-    e->points_num = 0;
-    e->points = calloc(e->poins_cap, sizeof(e->points[0]));
-    e->lengths = calloc(e->poins_cap, sizeof(e->lengths[0]));
-    e->angles = calloc(e->poins_cap, sizeof(e->angles[0]));
-    e->lengths_sorted = calloc(e->poins_cap, sizeof(e->lengths_sorted[0]));
+
     e->length_full = 0;
+    e->points_num = 0;
+
+    env_new_points(e, opts.default_points_cap);
+
     e->opts.name = opts.name;
     e->opts = opts;
-
     if (opts.line_thick)
         e->opts.line_thick = opts.line_thick;
     else
@@ -626,12 +661,7 @@ Envelope_t env_new(EnvelopeOpts opts) {
     return e;
 }
 
-void env_free(Envelope_t e) {
-    if (e->tm) {
-        timerman_free(e->tm);
-        e->tm = NULL;
-    }
-
+static void env_free_points(Envelope_t e) {
     if (e->lengths_sorted) {
         free(e->lengths_sorted);
         e->lengths_sorted = NULL;
@@ -653,6 +683,15 @@ void env_free(Envelope_t e) {
         e->points_num = 0;
         e->poins_cap = 0;
     }
+}
+
+void env_free(Envelope_t e) {
+    if (e->tm) {
+        timerman_free(e->tm);
+        e->tm = NULL;
+    }
+
+    env_free_points(e);
 
     if (e->rt_main.id) {
         UnloadRenderTexture(e->rt_main);
@@ -673,21 +712,31 @@ static int cmp(const void *a, const void *b, void *ud) {
 }
 
 static float len(Vector2 a, Vector2 b) {
-    const float t = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y);
-    return sqrtf(t * t);
+    trace("len: a %s, b %s\n", Vector2_tostr(a), Vector2_tostr(b));
+    return Vector2Length(Vector2Subtract(b, a));
 }
 
 void env_bake(Envelope_t e) {
     // Расчитать длину каждого сегмента
     const int lengths_num = e->points_num - 1;
+
     for (int i = 0; i < lengths_num; i++) {
-        e->lengths[i] = len(e->points[i], e->points[i + 1]);
+        trace(
+            "env_bake: %s, %s\n",
+            Vector2_tostr(e->points[i + 1]),
+            Vector2_tostr(e->points[i])
+        );
     }
 
-    /* for (int i = 0; i < lengths_num; i++) {
+    for (int i = 0; i < lengths_num; i++) {
+        e->lengths[i] = len(e->points[i + 1], e->points[i]);
+    }
+
+    for (int i = 0; i < lengths_num; i++) {
         trace("env_bake: len %f\n", e->lengths[i]);
     }
-    trace("\n"); */
+    trace("\n"); 
+    // */
 
     for (int i = 0; i < lengths_num; i++) {
         e->lengths_sorted[i] = e->lengths[i];
@@ -695,23 +744,25 @@ void env_bake(Envelope_t e) {
     size_t sz = sizeof(e->lengths_sorted[0]);
     koh_qsort(e->lengths_sorted, lengths_num, sz, cmp, NULL);
 
-    /* for (int i = 0; i < lengths_num; i++) {
+     for (int i = 0; i < lengths_num; i++) {
         trace("env_bake: len sorted %f\n", e->lengths_sorted[i]);
     }
-    trace("\n"); */
+    trace("\n"); 
+    // */
 
     // Расчитать длину всей кривой
     // Сперва складывать наименьшие величины
     float length_full = 0.f;
-    for (int i = 0; i < e->points_num; i++) {
+    for (int i = 0; i < lengths_num; i++) {
         /*trace("env_bak: delta %f\n", e->lengths_sorted[i]);*/
         length_full += e->lengths_sorted[i];
+        trace("env_bake: length_full %f\n", length_full);
     }
 
     e->length_full = length_full;
     trace("length_full: %f\n", e->length_full);
 
-    for (int i = 0; i < e->points_num - 1; i++) {
+    for (int i = 0; i < lengths_num; i++) {
         Vector2 p1 = e->points[i],
                 p2 = e->points[i + 1];
 
@@ -763,10 +814,84 @@ float env_eval(Envelope_t e, float amount) {
 }
 
 char *env_export_alloc(Envelope_t e) {
-    return NULL;
+    assert(e);
+
+    char *buf = calloc(128 + e->points_num * 32, sizeof(char)), *pbuf = buf;
+    assert(buf);
+
+    pbuf += sprintf(pbuf, "return { \n");
+    char *comma = ",";
+    for (int i = 0; i < e->points_num; i++) {
+        if (i + 1 == e->points_num)
+            comma = "";
+        pbuf += sprintf(
+            pbuf, "{ %f, %f, }%s", e->points[i].x, e->points[i].y, comma);
+    }
+    sprintf(pbuf, "}\n");
+
+    return buf;
 }
 
-void env_export_import(Envelope_t e, const char *lua_str) {
+// XXX: падает
+void env_import(Envelope_t e, const char *lua_str) {
+    assert(e);
+    assert(lua_str);
+
+    trace("env_import: '%s'\n", lua_str);
+
+    lua_State *l = luaL_newstate();
+    luaL_openlibs(l);
+
+    if (luaL_loadstring(l, lua_str) || lua_pcall(l, 0, 1, 0)) {
+        trace("env_import: error in lua code %s\n", lua_tostring(l, -1));
+        abort();
+    }
+
+    if (!lua_istable(l, -1)) {
+        fprintf(stderr, "env_import: result is not a table\n");
+        abort();
+    }
+
+    size_t len = lua_rawlen(l, -1);
+
+    env_new_points(e, len);
+    trace("env_import: len %zu\n", len);
+
+    trace("env_import: 1 [%s]\n", L_stack_dump(l));
+
+    for (int i = 0; i < len; i++) {
+        trace("env_import: %d\n", i);
+
+        lua_rawgeti(l, -1, i + 1);
+
+        trace("env_import: 2 [%s]\n", L_stack_dump(l));
+
+        if (lua_istable(l, -1)) {
+            trace("env_import: 3 [%s]\n", L_stack_dump(l));
+
+            // XXX: Нихера не работает
+            lua_rawgeti(l, -1, 1);
+            lua_rawgeti(l, -1, 2);
+
+            if (!lua_isnumber(l, -2) || !lua_isnumber(l, -1)) {
+                trace("env_import: bad types\n");
+                abort();
+            }
+
+            env_point_add(
+                e, (Vector2) { lua_tonumber(l, -2), lua_tonumber(l, -1) }
+            );
+            /*e->points[i].x = stderr, lua_tonumber(L, -2);*/
+            /*e->points[i].y = lua_tonumber(L, -1);*/
+        } else {
+            fprintf(stderr, "env_import: element %d is not a table\n", i + 1);
+            abort();
+        }
+        lua_pop(l, 3);
+    }
+    e->points_num = len;
+
+    lua_close(l);
 }
 
 void env_point_remove(Envelope_t e, int index) {
