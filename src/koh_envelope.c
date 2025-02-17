@@ -798,7 +798,7 @@ float env_eval(Envelope_t e, float amount) {
     if (!e->baked) 
         env_bake(e);
 
-    float path_len = 0;
+    //float path_len = 0;
 
     /*
     Если для сохранения значения интерполяции использовать только amount,
