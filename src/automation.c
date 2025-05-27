@@ -7,12 +7,11 @@
 #include "koh_common.h"
 #include "koh_envelope.h"
 #include "koh_routine.h"
-#include "koh_console.h"
 #include "koh_hashers.h"
 #include "koh_hotkey.h"
 #include "koh_hotkey.h"
 #include "koh_logger.h"
-#include "koh_script.h"
+#include "koh_lua.h"
 #include "raylib.h"
 #include <assert.h>
 #include <stdbool.h>
@@ -151,16 +150,6 @@ int main(void) {
     SetTraceLogLevel(LOG_ERROR);
 
     hotkey_init(&hk);
-    console_init(&hk, &(struct ConsoleSetup) {
-        .on_enable = NULL,
-        .on_disable = NULL,
-        .udata = NULL,
-        .color_cursor = BLUE,
-        .color_text = BLACK,
-        .fnt_path = "assets/djv.ttf",
-        .fnt_size = 20,
-    });
-    console_immediate_buffer_enable(true);
 
     for (int i = 0; i < e_num; i++) {
         e[i] = env_new(env_partial_opts(e_opts[i]));

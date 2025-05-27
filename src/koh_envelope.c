@@ -14,7 +14,7 @@
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
-#include "koh_lua_tools.h"
+#include "koh_lua.h"
 
 // TODO: Сделать все на double
 // TODO: Сделать высоту первой точки - нулем, при любом её положении
@@ -465,16 +465,18 @@ bool on_anim_update(Timer *t) {
     return !e->is_playing;
 }
 
-void on_anim_stop(Timer *t) {
+bool on_anim_stop(Timer *t) {
     trace("on_anim_stop:\n");
     Envelope_t e = t->data;
     e->is_playing = false;
+    return false;
 }
 
-void env_stop(Envelope_t e) {
+bool env_stop(Envelope_t e) {
     e->is_playing = false;
     timerman_clear(e->tm);
     timerman_pause(e->tm, false);
+    return false;
 }
 
 static void env_pause(Envelope_t e) {
@@ -488,12 +490,13 @@ void env_play(Envelope_t e) {
     e->is_playing = true;
     e->player.x = 0.;
     e->player.y = 0.;
-    timerman_add(e->tm, (TimerDef) {
+    int err = timerman_add(e->tm, (TimerDef) {
         .data = e,
         .on_update = on_anim_update,
         .on_stop = on_anim_stop,
         .duration = player_duration,
     });
+    assert(err != -1);
 }
 
 void env_draw_imgui_opts(Envelope_t e) {
