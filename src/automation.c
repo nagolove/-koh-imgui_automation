@@ -122,6 +122,8 @@ static void update_render() {
     char title[128] = {};
     sprintf(title, "fps %d", GetFPS());
     SetWindowTitle(title);
+
+    WaitTime(0.01f);
 }
 
 int main(void) {
@@ -130,7 +132,7 @@ int main(void) {
     camera.zoom = 1.0f;
     srand(time(NULL));
 
-    InitWindow(screen_width, screen_height, "color worms");
+    InitWindow(screen_width, screen_height, "koh-color worms");
     /*SetWindowState(FLAG_WINDOW_UNDECORATED | FLAG_WINDOW_RESIZABLE);*/
     SetWindowState(FLAG_WINDOW_RESIZABLE);
 
