@@ -393,7 +393,6 @@ static void env_draw(Envelope_t e) {
         .step = grid_step,
     };
     cosys_draw(cosys_opts);
-
     draw_lines(e);
 
     if (e->baked) {
@@ -435,7 +434,9 @@ static void env_draw(Envelope_t e) {
 
     if (e->is_playing) {
         DrawLine(e->player.x, 0, e->player.x, e->rt_main.texture.width, BLACK);
-        DrawCircleV(e->player, player_radius, color_player);
+        Vector2 p_mirrored = e->player;
+        p_mirrored.y = e->rt_main.texture.height - e->player.y;
+        DrawCircleV(p_mirrored, player_radius, color_player);
     }
 
     EndMode2D();
@@ -801,20 +802,42 @@ float env_eval(Envelope_t e, float amount) {
     if (!e->baked) 
         env_bake(e);
 
-    //float path_len = 0;
-
-    /*
-    Если для сохранения значения интерполяции использовать только amount,
-    то непонятно как делать?
-
-    Придется каждый раз, с самого начала считать, пока не будет достигнуто
-    значение amount и после него просчитывать еще несколько итераций
-     */
-
     e->last_amount = amount;
 
+    float target_length = amount * e->length_full;
+    float accumulated_length = 0.f;
+
+    // Нет сегментов
+    if (e->points_num < 2)
+        return 0.f;
+
+    for (int i = 0; i < e->points_num - 1; i++) {
+        float seg_length = e->lengths[i];
+
+        if (accumulated_length + seg_length >= target_length) {
+            // нашли нужный сегмент
+            float seg_progress = (target_length - accumulated_length) / seg_length;
+
+            Vector2 p1 = e->points[i];
+            Vector2 p2 = e->points[i + 1];
+
+            float y = Lerp(p1.y, p2.y, seg_progress);
+
+            return y;
+        }
+
+        accumulated_length += seg_length;
+    }
+
+    // Если мы дошли до конца — вернуть Y последней точки
+    return e->points[e->points_num - 1].y;
+}
+
+/*
+float env_eval(Envelope_t e, float amount) {
     return 0.;
 }
+*/
 
 char *env_export_alloc(Envelope_t e) {
     assert(e);
