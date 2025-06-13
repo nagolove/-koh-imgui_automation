@@ -96,6 +96,8 @@ static void render_gui() {
             env_draw_imgui_env(e[i]);
         }
     }
+
+    // XXX: зачем применяется igGetItemRectMin()?
     igGetItemRectMin(&img_min);
     igGetItemRectMax(&img_max);
 
